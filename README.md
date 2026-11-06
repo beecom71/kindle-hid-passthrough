@@ -45,7 +45,10 @@ As this project replaces the original Bluetooth stack, you can't use the default
 - [Hotfix](https://github.com/KindleModding/Hotfix/releases/tag/v2.3.7) (only for BTManager) — it's what gives the Kindle scriptlet support, and without it the BTManager entry never shows up on the home screen. Kindles jailbroken with older methods don't have scriptlets at all.
 
 > [!IMPORTANT]
-> **Setting up [usbnetlite](https://github.com/notmarek/kindle-usbnetlite#installation-instructions) first is highly encouraged.** This project touches Bluetooth, udev and upstart, all of which run early enough in boot that a bad state can leave a Kindle stuck on a white screen. Modern Kindles have no serial pads, so USB networking is the only way back in.
+> **Setting up a way back in first is highly encouraged.** This project touches Bluetooth, udev and upstart, all of which run early enough in boot that a bad state can leave a Kindle stuck on a white screen. Modern Kindles have no serial pads, so USB SSH is the only way back in.
+>
+> - **Newer Kindles (firmware 5.16 and up):** [Jobman](https://kindlemodding.org/jailbreaking/whats-next/jailbreaking-manager/) (`;kpm install jobman`), which adds USB SSH and a recovery mode.
+> - **Older Kindles:** [usbnetlite](https://github.com/notmarek/kindle-usbnetlite#installation-instructions), installed through MRPI.
 
 Kernels without UHID support are handled automatically: the daemon loads a bundled `uhid.ko` at startup (see [Kernel Modules](#kernel-modules)).
 
@@ -70,7 +73,15 @@ kpm install kindle-hid-passthrough
 
 ### KindleForge (currently unavailable)
 
-[KindleForge](https://github.com/KindleTweaks/KindleForge) is being reworked, so installing from it is not an option right now. Use KPM or the manual install below.
+[KindleForge](https://github.com/KindleTweaks/KindleForge) is being reworked, so installing from it is not an option right now. Use KPM, the scriptlet, or the manual install below.
+
+### Scriptlet
+
+This scriptlet automatically fetches the latest release, extracts the files, and installs all features. Requires a modern jailbreak (hdnext or [hotfix](https://github.com/KindleModding/Hotfix/releases/tag/v2.3.7)) that supports scriptlets in order for the script to show up in the library.
+
+1. Download the [installation scriptlet](https://github.com/zampierilucas/kindle-hid-passthrough/releases/latest/download/install_hid_passthrough.sh)
+2. Place the scriptlet in the Kindle's `documents/` folder
+3. Click the "Install Kindle HID Passthrough" book that appears in the library
 
 ### Manual install
 
@@ -203,6 +214,8 @@ The Kindle's kernel Bluetooth stack has bugs that prevent proper HID pairing. By
 The build recipe for the bundled `uhid.ko` modules is in [`docs/uhid-research.md`](docs/uhid-research.md).
 
 ## Hardware
+
+See [docs/compatibility.md](docs/compatibility.md) for every Kindle and Bluetooth device reported working or broken.
 
 Tested on:
 

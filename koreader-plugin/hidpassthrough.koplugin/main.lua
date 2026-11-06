@@ -38,6 +38,8 @@ pcall(require, "ffi/fbink_input_h")
 local HIDPassthrough = InputContainer:extend{
     name = "hidpassthrough",
     is_doc_only = false,
+    footer_symbol = "\u{F293}", -- bt logo, part of NerdFonts
+    footer_symbol_idle = "\u{E7B1}", -- crossed out bt logo, same font
 
     -- Override in settings/hidpassthrough.lua if your install differs.
     DAEMON_BINARY = "/mnt/us/kindle_hid_passthrough/kindle-hid-passthrough",
@@ -340,14 +342,7 @@ local function describeInput(path)
     return name, #types > 0 and table.concat(types, ",") or "unknown"
 end
 
-function HIDPassthrough:showInputDiagnostics()
-    local lines = {
-        T(_("Extra event map: %1"), self._event_map_status or _("not loaded")),
-        T(_("Plugin directory: %1"), tostring(self.path)),
-        "",
-        _("Input devices:"),
-    }
-
+local function inputLines(sep)
     local paths = {}
     for name in lfs.dir("/dev/input") do
         if name:match("^event%d+$") then
@@ -356,6 +351,7 @@ function HIDPassthrough:showInputDiagnostics()
     end
     table.sort(paths)
 
+    local lines = {}
     for dummy, path in ipairs(paths) do -- luacheck: ignore dummy
         local name, types = describeInput(path)
         local owner
@@ -366,9 +362,20 @@ function HIDPassthrough:showInputDiagnostics()
         else
             owner = _("NOT OPEN - keys are ignored")
         end
-        table.insert(lines, T("%1  %2\n    [%3]  %4",
-            path, name or "?", types or "?", owner))
+        table.insert(lines, T("%1  %2%3[%4]  %5",
+            path, name or "?", sep, types or "?", owner))
     end
+    return lines
+end
+
+function HIDPassthrough:showInputDiagnostics()
+    local lines = {
+        T(_("Extra event map: %1"), self._event_map_status or _("not loaded")),
+        T(_("Plugin directory: %1"), tostring(self.path)),
+        "",
+        _("Input devices:"),
+    }
+    util.arrayAppend(lines, inputLines("\n    "))
 
     UIManager:show(TextViewer:new{
         title = _("Input diagnostics"),
@@ -380,11 +387,19 @@ end
 -- An insert is always a new device, so force the re-open. One second, not
 -- externalkeyboard's half, so a real keyboard reaches it first.
 function HIDPassthrough:onEvdevInputInsert(path)
-    UIManager:scheduleIn(1, function() self:_attachInput(path, true) end)
+    logger.info("HIDPassthrough: input added", path, describeInput(path))
+    UIManager:scheduleIn(1, function()
+        self:_attachInput(path, true)
+        self:_updateFooter()
+    end)
 end
 
 function HIDPassthrough:onEvdevInputRemove(path)
-    UIManager:scheduleIn(1, function() self:_detachInput(path) end)
+    logger.info("HIDPassthrough: input removed", path)
+    UIManager:scheduleIn(1, function()
+        self:_detachInput(path)
+        self:_updateFooter()
+    end)
 end
 
 ------------------------------------------------------------------------------
@@ -401,11 +416,16 @@ function HIDPassthrough:_mapper()
     return self._mapper_client
 end
 
+-- Loaded once for the process, not per instance: each instance loading its
+-- own copy gave each its own server, and the reader's could not bind while
+-- the file browser's held the port, then the file browser closed its own.
+local event_server
+
 function HIDPassthrough:_eventServer()
-    if not self._event_server then
-        self._event_server = dofile(self.path .. "/eventserver.lua")
+    if not event_server then
+        event_server = dofile(self.path .. "/eventserver.lua")
     end
-    return self._event_server
+    return event_server
 end
 
 function HIDPassthrough:_syncEventServer()
@@ -415,7 +435,7 @@ function HIDPassthrough:_syncEventServer()
     if text:find("koreader.sh", 1, true)
         or text:find("auto.sh", 1, true)
         or text:find("keyboard_layout", 1, true) then
-        self:_eventServer().start()
+        self:_eventServer().start(self)
     else
         self:_eventServer().stop()
     end
@@ -828,11 +848,17 @@ local FAVORITE_ACTIONS = {
     { kind = "auto",     id = "brightness 1" },
     { kind = "auto",     id = "brightness -1" },
     { kind = "auto",     id = "brightness_toggle" },
+    { kind = "koreader", id = "warmth 1" },
+    { kind = "koreader", id = "warmth -1" },
     { kind = "koreader", id = "font_up 1" },
     { kind = "koreader", id = "font_down 1" },
     { kind = "koreader", id = "toggle_status_bar" },
     { kind = "koreader", id = "rotate" },
 }
+
+local function supportedHere(a)
+    return not a.id:match("^warmth ") or Device:hasNaturalLight()
+end
 
 function HIDPassthrough:_actionSections()
     if not self._action_sections then
@@ -847,7 +873,7 @@ function HIDPassthrough:_actionSections()
             local items = {}
             for dummy, fav in ipairs(FAVORITE_ACTIONS) do -- luacheck: ignore dummy
                 local a = by_key[fav.kind .. "\0" .. fav.id]
-                if a then
+                if a and supportedHere(a) then
                     table.insert(items, {
                         title = a.label,
                         script = self:_mapper().actionScript(a),
@@ -894,8 +920,8 @@ function HIDPassthrough:_actionSections()
         -- Split by what the script actually drives rather than lumping both
         -- under one "native" heading: auto.* try KOReader first and fall back
         -- to the Kindle reader, kindle.* only ever drive the Kindle reader.
-        -- The koreader.* ones duplicate the KOReader list above.
         local NATIVE_GROUPS = {
+            { kind = "koreader", title = _("KOReader adjustments"), stepped = true },
             { kind = "auto",   title = _("Works outside KOReader too") },
             { kind = "kindle", title = _("Native Kindle reader") },
         }
@@ -903,7 +929,8 @@ function HIDPassthrough:_actionSections()
             for dummy, group in ipairs(NATIVE_GROUPS) do -- luacheck: ignore dummy
                 local items = {}
                 for dummy2, a in ipairs(native) do -- luacheck: ignore dummy2
-                    if a.kind == group.kind then
+                    if a.kind == group.kind and supportedHere(a)
+                            and (not group.stepped or a.id:find(" ")) then
                         table.insert(items, {
                             title = a.label,
                             script = self:_mapper().actionScript(a),
@@ -1018,7 +1045,7 @@ function HIDPassthrough:_waitForState(target, timeout)
     return false
 end
 
-function HIDPassthrough:start()
+function HIDPassthrough:_startDaemon()
     local state = self:getState()
 
     if state == "on" then
@@ -1065,7 +1092,7 @@ function HIDPassthrough:start()
         tostring(self.START_TIMEOUT))
 end
 
-function HIDPassthrough:stop()
+function HIDPassthrough:_stopDaemon()
     local state = self:getState()
 
     if state ~= "on" then
@@ -1090,6 +1117,24 @@ function HIDPassthrough:stop()
         logger.dbg("HIDPassthrough: waiting for stop, tick", i)
     end
     return false, _("Daemon did not stop within timeout.")
+end
+
+function HIDPassthrough:start()
+    local ok, msg = self:_startDaemon()
+    if ok then
+        self:_mapper().setRunning(true)
+        self:_updateFooter()
+    end
+    return ok, msg
+end
+
+function HIDPassthrough:stop()
+    local ok, msg = self:_stopDaemon()
+    if ok then
+        self:_mapper().setRunning(false)
+        self:_updateFooter()
+    end
+    return ok, msg
 end
 
 function HIDPassthrough:toggle()
@@ -1812,7 +1857,38 @@ function HIDPassthrough:onInputEvent()
     PowerD:resetT1Timeout()
 end
 
+local versions_logged = false
+
+function HIDPassthrough:_logVersions()
+    if versions_logged then return end
+    versions_logged = true
+
+    local state, body = self:getState()
+    local sha = util.readFromFile(self.DAEMON_BINARY:match("^(.*)/") .. "/BUILD_SHA")
+    local mapper = self:_mapper()
+    local mapper_version = "not installed"
+    if mapper.installed() then
+        local p = io.popen(mapper.BIN .. " --version 2>&1")
+        mapper_version = p and p:read("*l") or "?"
+        if p then p:close() end
+    end
+    logger.info("HIDPassthrough: plugin", self.version,
+        "| daemon", state, body and extractField(body, "version") or "",
+        "| BUILD_SHA", sha and util.trim(sha) or "none",
+        "| mapper", mapper_version)
+    for dummy, line in ipairs(inputLines("  ")) do -- luacheck: ignore dummy
+        logger.info("HIDPassthrough: input", line)
+    end
+end
+
 function HIDPassthrough:init()
+    self.show_in_footer = G_reader_settings:isTrue("HIDPassthrough_show_in_footer")
+    self._status_content_func = function()
+        return self:_statusText()
+    end
+    if self.show_in_footer then
+        self:_addFooterSymbol()
+    end
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
     self:_extendEventMap()
@@ -1825,12 +1901,13 @@ function HIDPassthrough:init()
     self:_scanInputs()
     self:_startBatteryPoll()
     self:_syncEventServer()
+    UIManager:nextTick(function() self:_logVersions() end)
 end
 
 function HIDPassthrough:onCloseWidget()
+    self:_eventServer().stop(self)
     self:_cancelPolls()
     self:_stopBatteryPoll()
-    self:_eventServer().stop()
 end
 
 function HIDPassthrough:onResume()
@@ -1838,7 +1915,7 @@ function HIDPassthrough:onResume()
 end
 
 ------------------------------------------------------------------------------
--- Peripheral battery in the status bars
+-- Peripheral battery or HID status in the status bars
 ------------------------------------------------------------------------------
 
 -- One failed poll per KOReader run is enough to learn the daemon is down.
@@ -1877,24 +1954,16 @@ function HIDPassthrough:_batteryText()
     return self.BATTERY_LETTER .. ": " .. level .. "%"
 end
 
--- Registering flips the footer's "External content" item on, so only do it
--- once a device has actually reported a level.
+-- Registering a footer item flips the footer's "External content" item on, so
+-- the footer side is only touched via the status bar setting.
 function HIDPassthrough:_setBatteryShown(shown)
     if shown == self._battery_shown then return end
     self._battery_shown = shown
-    local footer = self.ui.view and self.ui.view.footer
-    if footer then
-        if shown then
-            footer:addAdditionalFooterContent(self._battery_content_func)
-        else
-            footer:removeAdditionalFooterContent(self._battery_content_func)
-        end
-    end
     if self.ui.crelistener then
         if shown then
-            self.ui.crelistener:addAdditionalHeaderContent(self._battery_content_func)
+            self.ui.crelistener:addAdditionalHeaderContent(self._status_content_func)
         else
-            self.ui.crelistener:removeAdditionalHeaderContent(self._battery_content_func)
+            self.ui.crelistener:removeAdditionalHeaderContent(self._status_content_func)
         end
     end
 end
@@ -1937,7 +2006,7 @@ function HIDPassthrough:_stopBatteryPoll()
         UIManager:unschedule(self._battery_poll_cb)
         self._battery_poll_cb = nil
     end
-    self:_setBatteryShown(false)
+    self._battery_shown = false
     self._battery = nil
 end
 
@@ -1964,6 +2033,46 @@ function HIDPassthrough:_doToggleAudio(touchmenu_instance)
     UIManager:show(InfoMessage:new{ text = msg, timeout = ok and 2 or 4 })
     if touchmenu_instance then
         touchmenu_instance:updateItems()
+    end
+end
+
+-- Battery level when a device reports one, the BT symbol while a device
+-- is connected, the crossed out one while the daemon is up (unless hidden
+-- from the menu), otherwise nothing.
+function HIDPassthrough:_statusText()
+    local state, body = self:getState()
+    if state ~= "on" then return end
+    local idle = body:find('"connections"%s*:%s*%[%s*%]') ~= nil
+    if self._battery and not idle then
+        return self:_batteryText()
+    end
+    local footer = self.ui.view and self.ui.view.footer
+    if idle and G_reader_settings:isTrue("HIDPassthrough_footer_hide_idle") then return end
+    local prefix = footer and footer.settings and footer.settings.item_prefix
+    if prefix == "letters" then
+        return T(idle and _("%1 idle") or _("%1 on"), "ʙᴛ") -- small caps
+    end
+    return idle and self.footer_symbol_idle or self.footer_symbol
+end
+
+function HIDPassthrough:_updateFooter()
+    if self.show_in_footer then
+        UIManager:broadcastEvent(Event:new("RefreshAdditionalContent"))
+    end
+end
+
+function HIDPassthrough:_addFooterSymbol()
+    if self.ui.view then
+        self.ui.view.footer:addAdditionalFooterContent(self._status_content_func)
+        self:_updateFooter()
+    end
+end
+
+function HIDPassthrough:_removeFooterSymbol()
+    if self.ui.view then
+        self.ui.view.footer:removeAdditionalFooterContent(self._status_content_func)
+        self:_updateFooter()
+        UIManager:broadcastEvent(Event:new("UpdateFooter", true))
     end
 end
 
@@ -2044,6 +2153,30 @@ function HIDPassthrough:addToMainMenu(menu_items)
                         callback = function() self:clearCache() end,
                     },
                 },
+            },
+            {
+                text = _("Show HID Passthrough daemon status in status bar"),
+                checked_func = function() return self.show_in_footer end,
+                callback = function()
+                    self.show_in_footer = not self.show_in_footer
+                    G_reader_settings:flipNilOrFalse("HIDPassthrough_show_in_footer")
+                    if self.show_in_footer then
+                        self:_addFooterSymbol()
+                    else
+                        self:_removeFooterSymbol()
+                    end
+                end,
+            },
+            {
+                text = _("Hide status when no device is connected"),
+                enabled_func = function() return self.show_in_footer end,
+                checked_func = function()
+                    return G_reader_settings:isTrue("HIDPassthrough_footer_hide_idle")
+                end,
+                callback = function()
+                    G_reader_settings:flipNilOrFalse("HIDPassthrough_footer_hide_idle")
+                    self:_updateFooter()
+                end,
             },
             {
                 text = _("About HID Passthrough"),
