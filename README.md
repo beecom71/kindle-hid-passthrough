@@ -189,6 +189,8 @@ AA:BB:CC:DD:EE:FF/P classic My Gamepad report=010000014040000140403001
 
 On **Kindle**, the reading application ignores standard input devices, so you need a separate input mapper to trigger actions like page turns. Recommended: [kindle-button-mapper-rs](https://github.com/zampierilucas/kindle-button-mapper-rs) - A lightweight daemon that maps HID inputs to Kindle actions.
 
+Headset buttons (pause, next and previous track) and the media session a player uses to take them over are described in [docs/audio.md](docs/audio.md).
+
 On more **open devices like Kobo**, applications may read directly from `/dev/input/eventX`, so the HID devices created by this project could work out of the box without additional mapping.
 
 ## How It Works

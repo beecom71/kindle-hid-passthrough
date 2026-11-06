@@ -477,11 +477,15 @@ local MAPPER_KINDS = {
     { section = "triggers", label = _("Trigger") },
 }
 
--- Daemon-side media control, mapped to assets/audio-hack/media.sh.
+-- Daemon-side media control, mapped to assets/audio-hack/media.sh. The pause
+-- actions reach any audio. Next and previous need a player that registered a
+-- media session (docs/audio.md): only the player knows what its tracks are.
 local MEDIA_ACTIONS = {
-    { command = "toggle", title = _("Play/Pause any audio") },
-    { command = "pause",  title = _("Pause any audio") },
-    { command = "play",   title = _("Resume any audio") },
+    { command = "toggle",   title = _("Play/Pause any audio") },
+    { command = "pause",    title = _("Pause any audio") },
+    { command = "play",     title = _("Resume any audio") },
+    { command = "next",     title = _("Next track") },
+    { command = "previous", title = _("Previous track") },
 }
 
 -- Who owns the device node. Only one process can hold an evdev grab, so this
@@ -886,8 +890,10 @@ function HIDPassthrough:_actionSections()
         end
 
         -- The daemon pauses by holding its own audio FIFO, so this stops
-        -- whatever is playing without the application cooperating. It replaced
-        -- the per-plugin audiobook events this branch used to list: those only
+        -- whatever is playing without the application cooperating. A player
+        -- that registered a media session is asked first, and is the only
+        -- thing that can skip a track (see media.sh). It replaced the
+        -- per-plugin audiobook events this branch used to list: those only
         -- reach the plugin that owns the playback and do nothing otherwise.
         if util.pathExists(self:_mapper().MEDIA) then
             local items = {}
