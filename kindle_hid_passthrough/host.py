@@ -680,11 +680,22 @@ class HIDHost(ClassicMixin, BLEMixin):
             self._sessions_changed.set()
 
     def _update_read_batching(self):
-        """Batch HCI reads while any device is streaming reports, read per packet otherwise."""
+        """Batch HCI reads while any device is streaming reports, read per packet otherwise.
+
+        Never while an audio device is connected. A2DP is outbound and paced by
+        the controller handing back its ACL buffers in Number Of Completed
+        Packets events; holding those for a batch interval stalls the stream
+        for that long, and an SBC packet goes out every ~15 ms. The media-key
+        node an audio session carries reports a key now and then, so there is
+        nothing for batching to save there anyway.
+        """
         reads = getattr(self.transport, 'reads', None)
         if reads is None:
             return
-        if any(s.uhid_device for s in self.sessions.values()):
+        sessions = self.sessions.values()
+        if any(s.protocol == Protocol.CLASSIC_AUDIO for s in sessions):
+            reads.stop()
+        elif any(s.uhid_device for s in sessions):
             reads.start()
         else:
             reads.stop()
@@ -703,6 +714,8 @@ class HIDHost(ClassicMixin, BLEMixin):
     def _register_session(self, session: DeviceSession):
         self.sessions[session.address] = session
         self._notify_sessions_changed()
+        # An audio session stops read batching from the moment it exists.
+        self._update_read_batching()
         session.connection.on(
             'disconnection',
             lambda reason: self._on_session_disconnection(session, reason))
