@@ -166,6 +166,13 @@ class DeviceSession:
 
 
 
+# AV/C panel operation DOWN is 0x02. bumble 0.0.226 declares
+# PassThroughFrame.OperationId.DOWN as 0x01, which makes it an alias of UP
+# (fixed in google/bumble afcefaa), so naming the member never matches a real
+# DOWN press. The value works with either bumble.
+AVC_OPERATION_DOWN = 0x02
+
+
 class KindleAvrcpDelegate(avrcp.Delegate):
     def __init__(self, host):
         super().__init__()
@@ -202,7 +209,7 @@ class KindleAvrcpDelegate(avrcp.Delegate):
             bitmask = 0x04 # Bit 2
         elif operation_id in (avc.PassThroughFrame.OperationId.FORWARD, avc.PassThroughFrame.OperationId.UP, avc.PassThroughFrame.OperationId.RIGHT):
             bitmask = 0x01 # Bit 0
-        elif operation_id in (avc.PassThroughFrame.OperationId.BACKWARD, avc.PassThroughFrame.OperationId.DOWN, avc.PassThroughFrame.OperationId.LEFT):
+        elif operation_id in (avc.PassThroughFrame.OperationId.BACKWARD, AVC_OPERATION_DOWN, avc.PassThroughFrame.OperationId.LEFT):
             bitmask = 0x02 # Bit 1
         elif operation_id == avc.PassThroughFrame.OperationId.VOLUME_UP:
             bitmask = 0x08 # Bit 3
