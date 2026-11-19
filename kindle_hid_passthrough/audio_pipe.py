@@ -208,8 +208,11 @@ class SbcStruct(ctypes.Structure):
 
 
 class SbcEncoder:
-    def __init__(self, bitpool: int = SBC_BITPOOL_DEFAULT):
+    def __init__(self, bitpool: int = SBC_BITPOOL_DEFAULT, mode: int = 0x03,
+                 allocation: int = 0x00):
         self.bitpool = bitpool
+        self.mode = mode              # 0x03 joint stereo, 0x02 stereo
+        self.allocation = allocation  # 0x00 loudness, 0x01 SNR
         self._sbc_lib = None
         self._sbc_struct = None
         self._available = False
@@ -244,8 +247,8 @@ class SbcEncoder:
                 sbc_cfg.frequency = 0x02  # 44.1 kHz
                 sbc_cfg.blocks = 0x03     # 16 blocks
                 sbc_cfg.subbands = 0x01   # 8 subbands
-                sbc_cfg.mode = 0x03       # Joint Stereo
-                sbc_cfg.allocation = 0x00 # Loudness
+                sbc_cfg.mode = self.mode
+                sbc_cfg.allocation = self.allocation
                 sbc_cfg.bitpool = self.bitpool
                 self._available = True
                 log.info("[Audio] libsbc loaded successfully")
@@ -293,13 +296,14 @@ class FifoAudioStreamer:
     to the FIFO writer when full.
     """
 
-    def __init__(self, fifo_path: str = FIFO_PATH):
+    def __init__(self, fifo_path: str = FIFO_PATH, bitpool: int = SBC_BITPOOL_DEFAULT,
+                 mode: int = 0x03, allocation: int = 0x00):
         self.fifo_path = fifo_path
         self.fifo_fd = None
         self._chunks = deque()
         self._avail = 0
         self.resampler = AudioResampler()
-        self.encoder = SbcEncoder()
+        self.encoder = SbcEncoder(bitpool=bitpool, mode=mode, allocation=allocation)
 
         # An encoder that initialised but cannot produce a frame is unusable:
         # without a silence frame there is nothing to substitute when a later

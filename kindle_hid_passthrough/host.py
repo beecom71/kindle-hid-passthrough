@@ -921,8 +921,35 @@ class HIDHost(ClassicMixin, BLEMixin):
                     log.error(f"Failed to establish AVDTP connection: {e}")
                     return
 
+        # Ask the sink what it accepts before choosing a configuration: a
+        # fixed 44.1 kHz / joint stereo / bitpool 2-53 proposal is rejected
+        # with UNSUPPORTED_CONFIGURATION (avdtp 0x29) by sinks whose bitpool
+        # range or channel modes are narrower (many small speakers).
+        try:
+            endpoints = await avdtp_protocol.discover_remote_endpoints()
+        except Exception as e:
+            log.error(f"[Classic Audio] AVDTP discover failed: {errstr(e)}")
+            return
+        sink_endpoint = next(
+            (e for e in endpoints
+             if e.tsep == StreamEndPointType.SNK and self._sink_sbc_info(e) is not None),
+            None) or next(
+            (e for e in endpoints if e.tsep == StreamEndPointType.SNK), None)
+        if not sink_endpoint:
+            log.error("No AVDTP SINK endpoints found on remote")
+            return
+        sbc_choice = self._negotiate_sbc(self._sink_sbc_info(sink_endpoint))
+        if sbc_choice is None:
+            return
+        sbc_info, encoder_params = sbc_choice
+        codec_caps = MediaCodecCapabilities(
+            media_type=AVDTP_AUDIO_MEDIA_TYPE,
+            media_codec_type=A2DP_SBC_CODEC_TYPE,
+            media_codec_information=sbc_info,
+        )
+
         from audio_pipe import FRAMES_PER_PACKET, SAMPLES_PER_FRAME, FifoAudioStreamer
-        audio_streamer = FifoAudioStreamer()
+        audio_streamer = FifoAudioStreamer(**encoder_params)
         samples_per_packet = SAMPLES_PER_FRAME * FRAMES_PER_PACKET
 
         async def packet_generator():
@@ -960,14 +987,6 @@ class HIDHost(ClassicMixin, BLEMixin):
             # Creates the LocalSource, binds the pump, registers it to the protocol
             source = avdtp_protocol.add_source(codec_caps, pump)
 
-            endpoints = await avdtp_protocol.discover_remote_endpoints()
-            sink_endpoint = next(
-                (e for e in endpoints if e.tsep == StreamEndPointType.SNK), None)
-            if not sink_endpoint:
-                log.error("No AVDTP SINK endpoints found on remote")
-                await self._close_audio_session()
-                return
-
             log.info(f"Found remote SINK endpoint: {sink_endpoint.seid}")
 
             stream = await avdtp_protocol.create_stream(source, sink_endpoint)
@@ -991,6 +1010,82 @@ class HIDHost(ClassicMixin, BLEMixin):
         # FIX: Create UHID device for AVRCP media keys
         if not session.uhid_device:
             self._create_uhid_device(session)
+
+    @staticmethod
+    def _sink_sbc_info(endpoint):
+        """The SBC capabilities a discovered sink endpoint advertises, or None."""
+        from bumble.a2dp import A2DP_SBC_CODEC_TYPE, SbcMediaCodecInformation
+        from bumble.avdtp import MediaCodecCapabilities
+        for cap in getattr(endpoint, 'capabilities', None) or ():
+            if not isinstance(cap, MediaCodecCapabilities):
+                continue
+            if cap.media_codec_type != A2DP_SBC_CODEC_TYPE:
+                continue
+            info = cap.media_codec_information
+            if isinstance(info, SbcMediaCodecInformation):
+                return info
+            try:
+                return SbcMediaCodecInformation.from_bytes(bytes(info))
+            except Exception:
+                return None
+        return None
+
+    @staticmethod
+    def _negotiate_sbc(remote):
+        """Pick one SBC configuration inside what the sink supports.
+
+        Returns (SbcMediaCodecInformation, FifoAudioStreamer kwargs) or None.
+        The encoder always produces 44.1 kHz, 16 blocks, 8 subbands; channel
+        mode, allocation and bitpool follow the sink.
+        """
+        from bumble.a2dp import SbcMediaCodecInformation as Sbc
+        from audio_pipe import SBC_BITPOOL_DEFAULT
+
+        if remote is None:
+            # Nothing advertised (or unparsable): keep the old proposal.
+            log.warning("[Classic Audio] sink advertised no SBC capabilities; using defaults")
+            remote = Sbc(Sbc.SamplingFrequency.SF_44100, Sbc.ChannelMode.JOINT_STEREO,
+                         Sbc.BlockLength.BL_16, Sbc.Subbands.S_8,
+                         Sbc.AllocationMethod.LOUDNESS, 2, 53)
+        log.info(f"[Classic Audio] sink SBC capabilities: {remote}")
+
+        if not remote.sampling_frequency & Sbc.SamplingFrequency.SF_44100:
+            log.error("[Classic Audio] sink does not accept 44.1 kHz SBC; cannot stream")
+            return None
+        if not remote.block_length & Sbc.BlockLength.BL_16:
+            log.error("[Classic Audio] sink does not accept 16-block SBC; cannot stream")
+            return None
+        if not remote.subbands & Sbc.Subbands.S_8:
+            log.error("[Classic Audio] sink does not accept 8-subband SBC; cannot stream")
+            return None
+
+        for mode, code in ((Sbc.ChannelMode.JOINT_STEREO, 0x03),
+                           (Sbc.ChannelMode.STEREO, 0x02)):
+            if remote.channel_mode & mode:
+                channel_mode, mode_code = mode, code
+                break
+        else:
+            log.error("[Classic Audio] sink accepts neither joint stereo nor stereo SBC")
+            return None
+
+        if remote.allocation_method & Sbc.AllocationMethod.LOUDNESS:
+            allocation, alloc_code = Sbc.AllocationMethod.LOUDNESS, 0x00
+        else:
+            allocation, alloc_code = Sbc.AllocationMethod.SNR, 0x01
+
+        lo = max(2, int(remote.minimum_bitpool_value or 2))
+        hi = min(53, int(remote.maximum_bitpool_value or 53))
+        if lo > hi:
+            log.error(f"[Classic Audio] sink bitpool range {lo}-{hi} is empty")
+            return None
+        bitpool = min(max(SBC_BITPOOL_DEFAULT, lo), hi)
+
+        chosen = Sbc(Sbc.SamplingFrequency.SF_44100, channel_mode,
+                     Sbc.BlockLength.BL_16, Sbc.Subbands.S_8,
+                     allocation, lo, hi)
+        log.info(f"[Classic Audio] SBC config: {channel_mode.name} {allocation.name} "
+                 f"bitpool {lo}-{hi}, encoding at {bitpool}")
+        return chosen, {'bitpool': bitpool, 'mode': mode_code, 'allocation': alloc_code}
 
     # ==================== COMMON ====================
 
